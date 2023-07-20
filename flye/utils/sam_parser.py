@@ -45,7 +45,7 @@ Alignment = namedtuple("Alignment", ["qry_id", "trg_id", "qry_start", "qry_end",
                                      "qry_sign", "qry_len", "trg_start",
                                      "trg_end", "trg_sign", "trg_len",
                                      "qry_seq", "trg_seq", "err_rate",
-                                     "is_secondary", "is_supplementary", "map_qv"])
+                                     "is_secondary", "is_supplementary", "map_qv", "base_quality"])
 
 
 ContigRegion = namedtuple("ContigRegion", ["ctg_id", "start", "end"])
@@ -183,7 +183,7 @@ class SynchronizedSamReader(object):
     Parses SAM file in multiple threads.
     """
     def __init__(self, sam_alignment, reference_fasta, multiproc_manager,
-                 max_coverage=None, use_secondary=False):
+                 max_coverage=None, use_secondary=False, reference_fasta_base=None):
         #check that alignment exists
         if not os.path.exists(sam_alignment):
             raise AlignmentException("Can't open {0}".format(sam_alignment))
@@ -198,20 +198,27 @@ class SynchronizedSamReader(object):
 
         #self.shared_manager = multiprocessing.Manager()
         self.ref_fasta = multiproc_manager.dict()
-        for (h, s) in iteritems(reference_fasta):
-            self.ref_fasta[_BYTES(h)] = _BYTES(s)
+        self.ref_base = dict()
+        if reference_fasta_base is None:
+            for (h, s) in iteritems(reference_fasta):
+                self.ref_fasta[_BYTES(h)] = _BYTES(s)
+        else:
+            for (h, s) in iteritems(reference_fasta_base):
+                self.ref_fasta[_BYTES(h)] = _BYTES(s[0])
+                self.ref_base[_BYTES(h)] = _BYTES(s[1])
 
     def get_region_sequence(self, region_id, region_start=None, region_end=None):
         parsed_contig = _BYTES(region_id)
         contig_str = self.ref_fasta[parsed_contig]
+        contig_base = self.ref_base[parsed_contig]
         if region_start is None:
             region_start = 0
         if region_end is None:
             region_end = len(contig_str)
 
-        return _STR(contig_str[region_start:region_end])
+        return _STR(contig_str[region_start:region_end]), _STR(contig_base[region_start:region_end])
 
-    def _parse_cigar(self, cigar_str, read_str, ctg_str, ctg_pos):
+    def _parse_cigar(self, cigar_str, read_str, ctg_str, ctg_pos, base_quality):
         #ctg_str = self.ref_fasta[ctg_name]
         trg_seq = []
         qry_seq = []
@@ -219,6 +226,7 @@ class SynchronizedSamReader(object):
         trg_pos = ctg_pos - 1
         qry_start = 0
         qry_pos = 0
+        base_qv = []
 
         left_hard = True
         left_soft = True
@@ -243,11 +251,13 @@ class SynchronizedSamReader(object):
             elif op in b"MX=":
                 qry_seq.append(read_str[qry_pos : qry_pos + size].upper())
                 trg_seq.append(ctg_str[trg_pos : trg_pos + size].upper())
+                base_qv.append(base_quality[qry_pos : qry_pos + size])
                 qry_pos += size
                 trg_pos += size
             elif op == b"I":
                 qry_seq.append(read_str[qry_pos : qry_pos + size].upper())
                 trg_seq.append(b"-" * size)
+                base_qv.append(base_quality[qry_pos : qry_pos + size])
                 qry_pos += size
             elif op == b"D":
                 qry_seq.append(b"-" * size)
@@ -261,6 +271,7 @@ class SynchronizedSamReader(object):
 
         trg_seq = b"".join(trg_seq)
         qry_seq = b"".join(qry_seq)
+        base_qv = b"".join(base_qv)
         matches = 0
         for i in range(len(trg_seq)):
             if trg_seq[i] == qry_seq[i]:
@@ -274,7 +285,7 @@ class SynchronizedSamReader(object):
         qry_end -= soft_clipped_right
 
         return (trg_start, trg_end, len(ctg_str), trg_seq,
-                qry_start, qry_end, qry_len, qry_seq, err_rate)
+                qry_start, qry_end, qry_len, qry_seq, base_qv, err_rate)
 
     def trim_and_transpose(_self, alignmens, region_start, region_end):
         """
@@ -399,14 +410,15 @@ class SynchronizedSamReader(object):
             read_str = tokens[9]
             map_qv = int(tokens[4])
             ctg_pos = int(tokens[3])
+            base_quality = tokens[10]
 
             if read_str == b"*":
                 continue
                 #raise Exception("Error parsing SAM: record without read sequence")
 
             (trg_start, trg_end, trg_len, trg_seq,
-            qry_start, qry_end, qry_len, qry_seq, err_rate) = \
-                    self._parse_cigar(cigar_str, read_str, contig_str, ctg_pos)
+            qry_start, qry_end, qry_len, qry_seq, base_qv, err_rate) = \
+                    self._parse_cigar(cigar_str, read_str, contig_str, ctg_pos, base_quality)
 
             #OVERHANG = cfg.vals["read_aln_overhang"]
             #if (float(qry_end - qry_start) / qry_len > self.min_aln_rate or
@@ -415,7 +427,7 @@ class SynchronizedSamReader(object):
                             qry_start, qry_end, "-" if is_reversed else "+", qry_len,
                             trg_start, trg_end, "+", trg_len,
                             _STR(qry_seq), _STR(trg_seq), err_rate,
-                            is_secondary, is_supplementary, map_qv)
+                            is_secondary, is_supplementary, map_qv, _STR(base_qv))
             alignments.append(aln)
 
             sequence_length += qry_end - qry_start
@@ -453,6 +465,7 @@ class SynchronizedSamReader(object):
             read_str = tokens[9]
             map_qv = int(tokens[4])
             ctg_pos = int(tokens[3])
+            base_quality = tokens[10]
 
             if read_str == b"*":
                 continue
@@ -461,14 +474,14 @@ class SynchronizedSamReader(object):
             contig_str = self.ref_fasta[parsed_contig]
 
             (trg_start, trg_end, trg_len, trg_seq,
-            qry_start, qry_end, qry_len, qry_seq, err_rate) = \
-                    self._parse_cigar(cigar_str, read_str, contig_str, ctg_pos)
+            qry_start, qry_end, qry_len, qry_seq, base_qv, err_rate) = \
+                    self._parse_cigar(cigar_str, read_str, contig_str, ctg_pos, base_quality)
 
             aln = Alignment(_STR(read_id), _STR(parsed_contig),
                             qry_start, qry_end, "-" if is_reversed else "+", qry_len,
                             trg_start, trg_end, "+", trg_len,
                             _STR(qry_seq), _STR(trg_seq), err_rate,
-                            is_secondary, is_supplementary, map_qv)
+                            is_secondary, is_supplementary, map_qv, _STR(base_qv))
             alignments.append(aln)
 
         return alignments

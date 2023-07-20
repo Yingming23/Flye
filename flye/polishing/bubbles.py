@@ -12,9 +12,12 @@ import logging
 from bisect import bisect
 from flye.six.moves import range
 from collections import defaultdict
+from pathlib import Path
 
+import os
 import multiprocessing
 import traceback
+import numpy
 
 import flye.utils.fasta_parser as fp
 import flye.config.py_cfg as cfg
@@ -29,7 +32,7 @@ logger = logging.getLogger()
 
 class ProfileInfo(object):
     __slots__ = ("nucl", "insertions", "propagated_ins", "num_deletions",
-                 "num_missmatch", "coverage")
+                 "num_missmatch", "coverage", "curr_insertions", "max_insertions")
 
     def __init__(self):
         self.nucl = ""
@@ -39,6 +42,8 @@ class ProfileInfo(object):
         self.num_deletions = 0
         self.num_missmatch = 0
         self.coverage = 0
+        self.curr_insertions = 0
+        self.max_insertions = 0
 
 
 class Bubble(object):
@@ -68,14 +73,21 @@ def _thread_worker(aln_reader, chunk_feeder, contigs_info, err_mode,
             ctg_id = ctg_region.ctg_id
             if len(ctg_aln) == 0:
                 continue
-            ref_seq = aln_reader.get_region_sequence(ctg_region.ctg_id, ctg_region.start,
+            ref_seq, ref_base = aln_reader.get_region_sequence(ctg_region.ctg_id, ctg_region.start,
                                                      ctg_region.end)
 
             #since we are working with contig chunks, tranform alignment coorinates
             ctg_aln = aln_reader.trim_and_transpose(ctg_aln, ctg_region.start, ctg_region.end)
             ctg_aln, mean_cov = get_uniform_alignments(ctg_aln)
-
-            profile, aln_errors = _compute_profile(ctg_aln, ref_seq)
+            if ctg_region.end - ctg_region.start > 0:
+                output_file = Path("/raid/scratch/share/ont-haec/flye_example/features/" + str(ctg_id) + "/profile.txt")
+                output_file.parent.mkdir(exist_ok=True, parents=True)
+                f = open("/raid/scratch/share/ont-haec/flye_example/features/" + str(ctg_id) + "/profile.txt", "w")
+                m = open("/raid/scratch/share/ont-haec/flye_example/features/" + str(ctg_id) + "/matrix.npy", "wb")
+                re = open("/raid/scratch/share/ont-haec/flye_example/features/" + str(ctg_id) + "/read_id.txt", "w")
+                profile, aln_errors = _compute_profile(ctg_aln, ref_seq, ref_base, f, m, re, ctg_id)
+            else:
+                profile, aln_errors = _compute_profile(ctg_aln, ref_seq)
             partition, num_long_bubbles = _get_partition(profile, err_mode)
             ctg_bubbles = _get_bubble_seqs(ctg_aln, profile, partition, ctg_id)
 
@@ -115,10 +127,10 @@ def make_bubbles(alignment_path, contigs_info, contigs_path,
     """
     CHUNK_SIZE = 1000000
 
-    contigs_fasta = fp.read_sequence_dict(contigs_path)
+    contigs_fasta, contigs_fasta_base = fp.read_sequence_dict_base(contigs_path)
     manager = multiprocessing.Manager()
     aln_reader = SynchronizedSamReader(alignment_path, contigs_fasta, manager,
-                                       cfg.vals["max_read_coverage"], use_secondary=True)
+                                       cfg.vals["max_read_coverage"], use_secondary=True, reference_fasta_base=contigs_fasta_base)
     chunk_feeder = SynchonizedChunkManager(contigs_fasta, manager, chunk_size=CHUNK_SIZE)
 
     results_queue = manager.Queue()
@@ -319,7 +331,7 @@ def _is_simple_kmer(profile, position):
     return True
 
 
-def _compute_profile(alignment, ref_sequence):
+def _compute_profile(alignment, ref_sequence, ref_base, f=None, m=None, re=None, cid=None):
     """
     Computes alignment profile
     """
@@ -332,14 +344,20 @@ def _compute_profile(alignment, ref_sequence):
     aln_errors = []
     #filtered = 0
     profile = [ProfileInfo() for _ in range(genome_len)]
-
+    if f is not None:
+        f.write("Reference sequence:\n")
     for i in range(genome_len):
         profile[i].nucl = ref_sequence[i]
-
+        if f is not None:
+            f.write(profile[i].nucl)
+    cnt = 0
     for aln in alignment:
         #if aln.err_rate > max_aln_err or len(aln.qry_seq) < min_aln_len:
+        if f is not None:
+            f.write("\nAln " + str(cnt) + ":\n ")
         if len(aln.qry_seq) < min_aln_len:
             #filtered += 1
+            cnt += 1
             continue
 
         aln_errors.append(aln.err_rate)
@@ -348,15 +366,21 @@ def _compute_profile(alignment, ref_sequence):
         trg_seq = shift_gaps(qry_seq, aln.trg_seq)
 
         trg_pos = aln.trg_start
+        diff = 0
         for trg_nuc, qry_nuc in zip(trg_seq, qry_seq):
             if trg_nuc == "-":
                 trg_pos -= 1
             #if trg_pos >= genome_len:
             #    trg_pos -= genome_len
-
+            if f is not None:
+                f.write("\nPos " + str(trg_pos) + ": Target Pos: " + trg_nuc + " Query Pos: " + qry_nuc)
             prof_elem = profile[trg_pos]
             if trg_nuc == "-":
                 prof_elem.insertions[aln.qry_id] += qry_nuc
+                prof_elem.curr_insertions += 1
+                if f is not None:
+                    f.write(" Insertion")
+                diff += 1
                 #prof_elem.num_inserts += 1
             else:
                 #prof_elem.nucl = trg_nuc
@@ -364,10 +388,27 @@ def _compute_profile(alignment, ref_sequence):
 
                 if qry_nuc == "-":
                     prof_elem.num_deletions += 1
+                    if f is not None:
+                        f.write(" Deletion")
+                    diff += 1
                 elif trg_nuc != qry_nuc:
                     prof_elem.num_missmatch += 1
-
+                    if f is not None:
+                        f.write(" Mismatch")
+                    diff += 1
             trg_pos += 1
+        f.write("\nDifferences: " + str(diff))
+        for prof in profile:
+            prof.max_insertions = max(prof.curr_insertions, prof.max_insertions)
+            prof.curr_insertions = 0
+        cnt += 1
+
+    total_len = genome_len
+    for prof in profile:
+        total_len += prof.max_insertions
+    if m is not None:
+        arr = numpy.zeros((2, len(alignment) + 1, total_len), dtype=numpy.uint8)
+        qry_count = numpy.empty((len(alignment) + 1, 36), dtype=numpy.str_)
 
     for i in range(genome_len):
         for ins_read, ins_str in profile[i].insertions.items():
@@ -377,8 +418,92 @@ def _compute_profile(alignment, ref_sequence):
                 profile[j].propagated_ins += 1
             for j in range(i + 1, min(i + span + 1, genome_len)):
                 profile[j].propagated_ins += 1
-            
+       
+    if f is not None:
+        count = 0
+        for prof in profile:
+            f.write("\nPos " + str(count) + " profile: Nucl = " + prof.nucl + " Cov = " + str(prof.coverage) + " Ins = " + str(len(prof.insertions)) + " Del = " + str(prof.num_deletions) + " Mis = " + str(prof.num_missmatch) + " Prop Ins = " + str(prof.propagated_ins))
+            count += 1
+        f.close()
+    if m is not None:
+        cnt = 0
+        sec_cnt = 0
+        for prof in profile:
+            arr[0][0][sec_cnt] = ord(prof.nucl)
+            arr[1][0][sec_cnt] = ord(ref_base[cnt])
+            cnt += 1
+            sec_cnt += 1
+            while prof.max_insertions > 0:
+                arr[0][0][sec_cnt] = ord("-")
+                arr[1][0][sec_cnt] = ord(ref_base[cnt])
+                sec_cnt += 1
+                prof.max_insertions -= 1
+        re.write("Target Seq\n")
+        aln_num = 1
+        for aln in alignment:
+            if len(aln.qry_seq) < min_aln_len:
+                continue
 
+            qry_seq = shift_gaps(aln.trg_seq, aln.qry_seq)
+            trg_seq = shift_gaps(qry_seq, aln.trg_seq)
+            trg_pos = aln.trg_start
+            read_id = aln.qry_id
+            base_quality = aln.base_quality
+            re.write(read_id + " " + base_quality + "\n")
+            pos = 0
+            prev = 0
+            for i in range(36):
+                qry_count[aln_num][i] = read_id[i]
+            for trg_nuc, qry_nuc in zip(trg_seq, qry_seq):
+                arr[0][aln_num][trg_pos] = ord(qry_nuc)
+                if qry_nuc != "-":
+                    arr[1][aln_num][trg_pos] = ord(base_quality[pos])
+                    prev = ord(base_quality[pos])
+                    pos += 1
+                else:
+                    arr[1][aln_num][trg_pos] = prev
+                trg_pos += 1
+            aln_num += 1
+        arr = numpy.delete(arr, numpy.s_[aln_num:], 1)
+        qry_count = numpy.delete(qry_count, numpy.s_[aln_num:], 0)
+
+        chunk = 0
+        i = 0
+        while i != len(arr[0][0]):
+            total_len = 0
+            cnt = 0
+            while cnt != 4096:
+                if total_len + i == len(arr[0][0]):
+                    break
+                if arr[0][0][total_len + i] == ord("-"):
+                    cnt -= 1
+                total_len += 1
+                cnt += 1
+            chunk_np = numpy.zeros((2, len(arr[0]), total_len), dtype=numpy.uint8)
+            for j in range(total_len):
+                chunk_np[0][0][j] = arr[0][0][i + j]
+                chunk_np[1][0][j] = arr[1][0][i + j]
+            aln_num = 1
+            chunk_id = open("/raid/scratch/share/ont-haec/flye_example/features/" + str(cid) + "/chunk" + str(chunk) + "_ids.txt", "w")
+            for j in range(1, len(arr[0])):
+                if sum(arr[0][j][i:total_len + i]) == 0:
+                    continue
+                for k in range(36):
+                    chunk_id.write(qry_count[j][k])
+                chunk_id.write("\n")
+                for k in range(total_len):
+                    chunk_np[0][aln_num][k] = arr[0][j][k + i]
+                    chunk_np[1][aln_num][k] = arr[1][j][k + i]
+                aln_num += 1
+            chunk_np = numpy.delete(chunk_np, numpy.s_[aln_num:], 1)
+            with open("/raid/scratch/share/ont-haec/flye_example/features/" + str(cid) + "/chunk" + str(chunk) + "_feats.npy", "wb") as chunk_arr:
+                numpy.save(chunk_arr, chunk_np)
+            chunk += 1
+            i += total_len
+            chunk_id.close()
+
+        re.close()
+        numpy.save(m, arr)
     #logger.debug("Filtered: {0} out of {1}".format(filtered, len(alignment)))
     return profile, aln_errors
 

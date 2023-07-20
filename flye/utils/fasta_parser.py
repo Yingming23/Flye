@@ -44,6 +44,16 @@ def read_sequence_dict(filename):
         seq_dict[hdr] = seq
     return seq_dict
 
+def read_sequence_dict_base(filename):
+    """
+    Reads Fastq file into a dictionary 
+    """
+    seq_dict = {}
+    seq_dict_base = {}
+    for hdr, seq, base in stream_sequence_base(filename):
+        seq_dict[hdr] = seq
+        seq_dict_base[hdr] = (seq, base)
+    return seq_dict, seq_dict_base
 
 def read_sequence_lengths(filename):
     seq_dict = {}
@@ -51,6 +61,25 @@ def read_sequence_lengths(filename):
         seq_dict[hdr] = len(seq)
     return seq_dict
 
+def stream_sequence_base(filename):
+    try:
+        gzipped, fastq = _is_fastq(filename)
+        
+        if not gzipped:
+            handle = open(filename, "rb")
+        else:
+            gz = gzip.open(filename, "rb")
+            handle = io.BufferedReader(gz)
+
+        if fastq:
+            for hdr, seq, base in _read_fastq(handle):
+                if not _validate_seq(seq):
+                    raise FastaError("Invalid char while reading {0}"
+                                     .format(filename))
+                yield _STR(hdr), _STR(_to_acgt_bytes(seq)), _STR(base)
+
+    except IOError as e:
+        raise FastaError(e)
 
 def stream_sequence(filename):
     try:
