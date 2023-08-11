@@ -82,10 +82,8 @@ def _thread_worker(aln_reader, chunk_feeder, contigs_info, err_mode,
             if ctg_region.end - ctg_region.start > 0:
                 output_file = Path("/raid/scratch/share/ont-haec/flye_example/features/" + str(ctg_id) + "/profile.txt")
                 output_file.parent.mkdir(exist_ok=True, parents=True)
-                f = open("/raid/scratch/share/ont-haec/flye_example/features/" + str(ctg_id) + "/profile.txt", "w")
                 m = open("/raid/scratch/share/ont-haec/flye_example/features/" + str(ctg_id) + "/matrix.npy", "wb")
-                re = open("/raid/scratch/share/ont-haec/flye_example/features/" + str(ctg_id) + "/read_id.txt", "w")
-                profile, aln_errors = _compute_profile(ctg_aln, ref_seq, ref_base, f, m, re, ctg_id)
+                profile, aln_errors = _compute_profile(ctg_aln, ref_seq, ref_base, m, ctg_id)
             else:
                 profile, aln_errors = _compute_profile(ctg_aln, ref_seq)
             partition, num_long_bubbles = _get_partition(profile, err_mode)
@@ -331,7 +329,7 @@ def _is_simple_kmer(profile, position):
     return True
 
 
-def _compute_profile(alignment, ref_sequence, ref_base, f=None, m=None, re=None, cid=None):
+def _compute_profile(alignment, ref_sequence, ref_base, m=None, cid=None):
     """
     Computes alignment profile
     """
@@ -344,17 +342,11 @@ def _compute_profile(alignment, ref_sequence, ref_base, f=None, m=None, re=None,
     aln_errors = []
     #filtered = 0
     profile = [ProfileInfo() for _ in range(genome_len)]
-    if f is not None:
-        f.write("Reference sequence:\n")
     for i in range(genome_len):
         profile[i].nucl = ref_sequence[i]
-        if f is not None:
-            f.write(profile[i].nucl)
     cnt = 0
     for aln in alignment:
         #if aln.err_rate > max_aln_err or len(aln.qry_seq) < min_aln_len:
-        if f is not None:
-            f.write("\nAln " + str(cnt) + ":\n ")
         if len(aln.qry_seq) < min_aln_len:
             #filtered += 1
             cnt += 1
@@ -372,14 +364,10 @@ def _compute_profile(alignment, ref_sequence, ref_base, f=None, m=None, re=None,
                 trg_pos -= 1
             #if trg_pos >= genome_len:
             #    trg_pos -= genome_len
-            if f is not None:
-                f.write("\nPos " + str(trg_pos) + ": Target Pos: " + trg_nuc + " Query Pos: " + qry_nuc)
             prof_elem = profile[trg_pos]
             if trg_nuc == "-":
                 prof_elem.insertions[aln.qry_id] += qry_nuc
                 prof_elem.curr_insertions += 1
-                if f is not None:
-                    f.write(" Insertion")
                 diff += 1
                 #prof_elem.num_inserts += 1
             else:
@@ -388,16 +376,11 @@ def _compute_profile(alignment, ref_sequence, ref_base, f=None, m=None, re=None,
 
                 if qry_nuc == "-":
                     prof_elem.num_deletions += 1
-                    if f is not None:
-                        f.write(" Deletion")
                     diff += 1
                 elif trg_nuc != qry_nuc:
                     prof_elem.num_missmatch += 1
-                    if f is not None:
-                        f.write(" Mismatch")
                     diff += 1
             trg_pos += 1
-        f.write("\nDifferences: " + str(diff))
         for prof in profile:
             prof.max_insertions = max(prof.curr_insertions, prof.max_insertions)
             prof.curr_insertions = 0
@@ -419,12 +402,6 @@ def _compute_profile(alignment, ref_sequence, ref_base, f=None, m=None, re=None,
             for j in range(i + 1, min(i + span + 1, genome_len)):
                 profile[j].propagated_ins += 1
        
-    if f is not None:
-        count = 0
-        for prof in profile:
-            f.write("\nPos " + str(count) + " profile: Nucl = " + prof.nucl + " Cov = " + str(prof.coverage) + " Ins = " + str(len(prof.insertions)) + " Del = " + str(prof.num_deletions) + " Mis = " + str(prof.num_missmatch) + " Prop Ins = " + str(prof.propagated_ins))
-            count += 1
-        f.close()
     if m is not None:
         cnt = 0
         sec_cnt = 0
@@ -438,7 +415,6 @@ def _compute_profile(alignment, ref_sequence, ref_base, f=None, m=None, re=None,
                 arr[1][0][sec_cnt] = ord(ref_base[cnt])
                 sec_cnt += 1
                 prof.max_insertions -= 1
-        re.write("Target Seq\n")
         aln_num = 1
         for aln in alignment:
             if len(aln.qry_seq) < min_aln_len:
@@ -449,7 +425,6 @@ def _compute_profile(alignment, ref_sequence, ref_base, f=None, m=None, re=None,
             trg_pos = aln.trg_start
             read_id = aln.qry_id
             base_quality = aln.base_quality
-            re.write(read_id + " " + base_quality + "\n")
             pos = 0
             prev = 0
             for i in range(36):
@@ -502,7 +477,6 @@ def _compute_profile(alignment, ref_sequence, ref_base, f=None, m=None, re=None,
             i += total_len
             chunk_id.close()
 
-        re.close()
         numpy.save(m, arr)
     #logger.debug("Filtered: {0} out of {1}".format(filtered, len(alignment)))
     return profile, aln_errors

@@ -13,6 +13,7 @@ import subprocess, multiprocessing
 import os
 from collections import defaultdict
 import gzip
+import ctypes
 
 from flye.polishing.alignment import (make_alignment, get_contigs_info,
                                       merge_chunks, split_into_chunks)
@@ -23,6 +24,7 @@ from flye.utils.utils import which
 import flye.config.py_cfg as cfg
 from flye.six import iteritems
 from flye.six.moves import range
+from Bio import SeqIO
 
 
 POLISH_BIN = "flye-modules"
@@ -33,6 +35,44 @@ logger = logging.getLogger()
 class PolishException(Exception):
     pass
 
+class SynchonizedCtgSeqManager(object):
+    """
+    Helper class to organize multiprocessing.
+    Stores the list of contig sequences and can
+    return them in multiple threds
+    """
+    def __init__(self, polish_target, multiproc_manager):
+        #prepare list of chunks to read
+        self.records = list(SeqIO.parse(polish_target, "fastq"))
+
+        #will be shared between processes
+        #self.shared_manager = multiprocessing.Manager()
+        self.shared_num_jobs = multiprocessing.Value(ctypes.c_int, 0)
+        self.shared_lock = multiproc_manager.Lock()
+        self.shared_eof = multiprocessing.Value(ctypes.c_bool, False)
+
+    def is_done(self):
+        return self.shared_eof.value
+    
+    def get_ctg_seq(self):
+        job_id = None
+        while True:
+            with self.shared_lock:
+                if self.shared_eof.value:
+                    return None, 0
+                
+                job_id = self.shared_num_jobs.value
+                self.shared_num_jobs.value = self.shared_num_jobs.value + 1
+                if self.shared_num_jobs.value == len(self.records):
+                    self.shared_eof.value = True
+                break
+            
+            time.sleep(0.01)
+            
+        region = self.records[job_id]
+        file_name = "target/target_" + str(region.id) + ".fastq"
+        SeqIO.write(region, file_name, "fastq")
+        return file_name, str(region.id)
 
 def check_binaries():
     if not which(POLISH_BIN):
@@ -48,9 +88,18 @@ def check_binaries():
     except OSError as e:
         raise PolishException(str(e))
 
+def polish_parallel(ctg_mng, read_seqs, work_dir, num_iters, num_threads, read_platform, read_type, output_progress):
+    try:
+        while True:
+            ctg_seq, job_id = ctg_mng.get_ctg_seq()
+            if ctg_seq is None:
+                break
+            polish(ctg_seq, read_seqs, work_dir, num_iters, num_threads, read_platform, read_type, output_progress, job_id)
+    except Exception as e:
+        logger.error("Thread exception")
 
 def polish(contig_seqs, read_seqs, work_dir, num_iters, num_threads, read_platform,
-           read_type, output_progress):
+           read_type, output_progress, job_id):
     """
     High-level polisher interface
     """
@@ -78,7 +127,7 @@ def polish(contig_seqs, read_seqs, work_dir, num_iters, num_threads, read_platfo
         ####
         if not bam_input:
             logger.info("Running minimap2")
-            alignment_file = os.path.join(work_dir, "minimap_{0}.bam".format(i + 1))
+            alignment_file = os.path.join(work_dir, "minimap_{0}.bam".format(job_id))
             make_alignment(prev_assembly, read_seqs, num_threads,
                            read_platform, read_type, alignment_file)
         else:
@@ -89,15 +138,15 @@ def polish(contig_seqs, read_seqs, work_dir, num_iters, num_threads, read_platfo
         logger.info("Separating alignment into bubbles")
         contigs_info = get_contigs_info(prev_assembly)
         bubbles_file = os.path.join(work_dir,
-                                    "bubbles_{0}.fasta".format(i + 1))
+                                    "bubbles_{0}.fasta".format(job_id))
         coverage_stats, mean_aln_error = \
             make_bubbles(alignment_file, contigs_info, prev_assembly,
                          read_platform, num_threads,
                          bubbles_file)
 
         logger.info("Alignment error rate: %f", mean_aln_error)
-        consensus_out = os.path.join(work_dir, "consensus_{0}.fasta".format(i + 1))
-        polished_file = os.path.join(work_dir, "polished_{0}.fasta".format(i + 1))
+        consensus_out = os.path.join(work_dir, "consensus_{0}.fasta".format(job_id))
+        polished_file = os.path.join(work_dir, "polished_{0}.fasta".format(job_id))
         if os.path.getsize(bubbles_file) == 0:
             logger.info("No reads were aligned during polishing")
             if not output_progress:
@@ -105,8 +154,8 @@ def polish(contig_seqs, read_seqs, work_dir, num_iters, num_threads, read_platfo
             open(stats_file, "w").write("#seq_name\tlength\tcoverage\n")
             open(polished_file, "w")
             return polished_file, stats_file
-
-        #####
+        return None
+'''        #####
         logger.info("Correcting bubbles")
         _run_polish_bin(bubbles_file, subs_matrix, hopo_matrix,
                         consensus_out, num_threads, output_progress, use_hopo)
@@ -140,7 +189,7 @@ def polish(contig_seqs, read_seqs, work_dir, num_iters, num_threads, read_platfo
         logger.disabled = logger_state
 
     return prev_assembly, stats_file
-
+'''
 
 def generate_polished_edges(edges_file, gfa_file, polished_contigs, work_dir,
                             platform, read_type, polished_stats, num_threads):

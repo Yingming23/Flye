@@ -15,6 +15,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import multiprocessing
 
 import flye.polishing.alignment as aln
 import flye.polishing.polish as pol
@@ -28,6 +29,7 @@ import flye.config.py_cfg as cfg
 from flye.config.configurator import setup_params, ConfigException
 from flye.utils.bytes2human import human2bytes, bytes2human
 from flye.utils.sam_parser import AlignmentException
+from flye.utils.utils import process_in_parallel
 import flye.utils.fasta_parser as fp
 #import flye.short_plasmids.plasmids as plas
 #import flye.trestle.trestle as tres
@@ -429,6 +431,9 @@ def _run_polisher_only(args):
     if bam_input and len(args.reads) > 1:
         raise ResumeException("Only single bam input supported")
 
+    synch_ctg_mng = pol.SynchonizedCtgSeqManager(args.polish_target, multiprocessing.Manager())
+    process_in_parallel(pol.polish_parallel, (synch_ctg_mng, args.reads, args.out_dir, 
+                                            args.num_iters, 1, args.platform, args.read_type, True), args.threads)
     pol.polish(args.polish_target, args.reads, args.out_dir,
                args.num_iters, args.threads, args.platform,
                args.read_type, output_progress=True)
