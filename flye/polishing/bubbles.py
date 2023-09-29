@@ -32,7 +32,7 @@ logger = logging.getLogger()
 
 class ProfileInfo(object):
     __slots__ = ("nucl", "insertions", "propagated_ins", "num_deletions",
-                 "num_missmatch", "coverage", "curr_insertions", "max_insertions")
+                 "num_missmatch", "coverage", "curr_insertions", "max_insertions", "curr_deletions", "max_deletions")
 
     def __init__(self):
         self.nucl = ""
@@ -44,6 +44,8 @@ class ProfileInfo(object):
         self.coverage = 0
         self.curr_insertions = 0
         self.max_insertions = 0
+        self.curr_deletions = 0
+        self.max_deletions = 0
 
 
 class Bubble(object):
@@ -80,9 +82,9 @@ def _thread_worker(aln_reader, chunk_feeder, contigs_info, err_mode,
             ctg_aln = aln_reader.trim_and_transpose(ctg_aln, ctg_region.start, ctg_region.end)
             ctg_aln, mean_cov = get_uniform_alignments(ctg_aln)
             if ctg_region.end - ctg_region.start > 0:
-                output_file = Path("/raid/scratch/share/ont-haec/flye_example/features/" + str(ctg_id) + "/profile.txt")
+                output_file = Path("/raid/scratch/liym/features/" + str(ctg_id) + "/profile.txt")
                 output_file.parent.mkdir(exist_ok=True, parents=True)
-                m = open("/raid/scratch/share/ont-haec/flye_example/features/" + str(ctg_id) + "/matrix.npy", "wb")
+                m = open("/raid/scratch/liym/features/" + str(ctg_id) + "/matrix.npy", "wb")
                 profile, aln_errors = _compute_profile(ctg_aln, ref_seq, ref_base, m, ctg_id)
             else:
                 profile, aln_errors = _compute_profile(ctg_aln, ref_seq)
@@ -336,7 +338,6 @@ def _compute_profile(alignment, ref_sequence, ref_base, m=None, cid=None):
     if len(alignment) == 0:
         raise Exception("No alignmemnts!")
     genome_len = alignment[0].trg_len
-
     #max_aln_err = cfg.vals["err_modes"][platform]["max_aln_error"]
     min_aln_len = min(cfg.vals["min_polish_aln_len"], genome_len // 2)
     aln_errors = []
@@ -368,21 +369,20 @@ def _compute_profile(alignment, ref_sequence, ref_base, m=None, cid=None):
             if trg_nuc == "-":
                 prof_elem.insertions[aln.qry_id] += qry_nuc
                 prof_elem.curr_insertions += 1
-                diff += 1
-                #prof_elem.num_inserts += 1
             else:
                 #prof_elem.nucl = trg_nuc
                 prof_elem.coverage += 1
 
                 if qry_nuc == "-":
                     prof_elem.num_deletions += 1
-                    diff += 1
+                    prof_elem.curr_deletions += 1
                 elif trg_nuc != qry_nuc:
                     prof_elem.num_missmatch += 1
-                    diff += 1
             trg_pos += 1
         for prof in profile:
             prof.max_insertions = max(prof.curr_insertions, prof.max_insertions)
+            prof.max_deletions = max(prof.curr_deletions, prof.max_deletions)
+            prof.curr_deletions = 0
             prof.curr_insertions = 0
         cnt += 1
 
@@ -390,8 +390,10 @@ def _compute_profile(alignment, ref_sequence, ref_base, m=None, cid=None):
     for prof in profile:
         total_len += prof.max_insertions
     if m is not None:
-        arr = numpy.zeros((2, len(alignment) + 1, total_len), dtype=numpy.uint8)
-        qry_count = numpy.empty((len(alignment) + 1, 36), dtype=numpy.str_)
+        get_max = max((len(alignment) + 1), 31)
+        arr = numpy.zeros((get_max, total_len, 2), dtype=numpy.uint8)
+        qry_count = numpy.empty((get_max, 36), dtype=numpy.str_)
+        qry_st = numpy.empty((get_max, 5), dtype=numpy.int32)
 
     for i in range(genome_len):
         for ins_read, ins_str in profile[i].insertions.items():
@@ -406,15 +408,14 @@ def _compute_profile(alignment, ref_sequence, ref_base, m=None, cid=None):
         cnt = 0
         sec_cnt = 0
         for prof in profile:
-            arr[0][0][sec_cnt] = ord(prof.nucl)
-            arr[1][0][sec_cnt] = ord(ref_base[cnt])
+            arr[0][sec_cnt][0] = ord(prof.nucl)
+            arr[0][sec_cnt][1] = ord(ref_base[cnt])
             cnt += 1
             sec_cnt += 1
-            while prof.max_insertions > 0:
-                arr[0][0][sec_cnt] = ord("-")
-                arr[1][0][sec_cnt] = ord(ref_base[cnt])
+            for _ in range(prof.max_insertions):
+                arr[0][sec_cnt][0] = ord("-")
+                arr[0][sec_cnt][1] = ord(ref_base[cnt])
                 sec_cnt += 1
-                prof.max_insertions -= 1
         aln_num = 1
         for aln in alignment:
             if len(aln.qry_seq) < min_aln_len:
@@ -422,62 +423,140 @@ def _compute_profile(alignment, ref_sequence, ref_base, m=None, cid=None):
 
             qry_seq = shift_gaps(aln.trg_seq, aln.qry_seq)
             trg_seq = shift_gaps(qry_seq, aln.trg_seq)
+
             trg_pos = aln.trg_start
+            insts = 0
+            for i in range(trg_pos):
+                insts += profile[i].max_insertions
+            true_pos = trg_pos
+            true_pos += insts
+            qry_start = aln.qry_start
+            qry_end = aln.qry_end
+            strand = aln.qry_sign
+            trg_start = aln.trg_start
+            trg_end = aln.trg_end
             read_id = aln.qry_id
             base_quality = aln.base_quality
             pos = 0
             prev = 0
+            qry_st[aln_num][0] = qry_start
+            qry_st[aln_num][1] = qry_end
+            qry_st[aln_num][2] = trg_start
+            qry_st[aln_num][3] = trg_end
+            qry_st[aln_num][4] = ord(strand)
             for i in range(36):
                 qry_count[aln_num][i] = read_id[i]
+
+            done = set()
+
             for trg_nuc, qry_nuc in zip(trg_seq, qry_seq):
-                arr[0][aln_num][trg_pos] = ord(qry_nuc)
+                if trg_nuc == "-":
+                    trg_pos -= 1
+
+                arr[aln_num][true_pos][0] = ord(qry_nuc)
                 if qry_nuc != "-":
-                    arr[1][aln_num][trg_pos] = ord(base_quality[pos])
+                    arr[aln_num][true_pos][1] = ord(base_quality[pos])
                     prev = ord(base_quality[pos])
                     pos += 1
                 else:
-                    arr[1][aln_num][trg_pos] = prev
+                    arr[aln_num][true_pos][1] = prev
+
+                true_pos += 1
+                if trg_pos not in done:
+                    for _ in range(profile[trg_pos].max_insertions - len(profile[trg_pos].insertions[read_id])):
+                        arr[aln_num][true_pos][0] = ord("-")
+                        arr[aln_num][true_pos][1] = prev
+                        true_pos += 1
+                    done.add(trg_pos)
+            
                 trg_pos += 1
             aln_num += 1
-        arr = numpy.delete(arr, numpy.s_[aln_num:], 1)
+        while aln_num < 31:
+            for i in range(len(arr[0])):
+                arr[aln_num][i][0] = ord(".")
+                arr[aln_num][i][1] = 126
+            for i in range(36):
+                qry_count[aln_num][i] = "-"
+            qry_st[aln_num][0] = 0
+            qry_st[aln_num][1] = 0
+            qry_st[aln_num][2] = 0
+            qry_st[aln_num][3] = 0
+            qry_st[aln_num][4] = 0
+            aln_num += 1
         qry_count = numpy.delete(qry_count, numpy.s_[aln_num:], 0)
+        qry_st = numpy.delete(qry_st, numpy.s_[aln_num:], 0)
+        arr = numpy.delete(arr, numpy.s_[aln_num:], 0)
 
         chunk = 0
         i = 0
-        while i != len(arr[0][0]):
+        while i != len(arr[0]):
             total_len = 0
             cnt = 0
             while cnt != 4096:
-                if total_len + i == len(arr[0][0]):
+                if total_len + i == len(arr[0]):
                     break
-                if arr[0][0][total_len + i] == ord("-"):
+                if arr[0][total_len + i][0] == ord("-"):
                     cnt -= 1
                 total_len += 1
                 cnt += 1
-            chunk_np = numpy.zeros((2, len(arr[0]), total_len), dtype=numpy.uint8)
+
+            chunk_np = numpy.zeros((len(arr), total_len, 2), dtype=numpy.uint8)
+            
             for j in range(total_len):
-                chunk_np[0][0][j] = arr[0][0][i + j]
-                chunk_np[1][0][j] = arr[1][0][i + j]
+                chunk_np[0][j] = arr[0][i + j]
+
             aln_num = 1
-            chunk_id = open("/raid/scratch/share/ont-haec/flye_example/features/" + str(cid) + "/chunk" + str(chunk) + "_ids.txt", "w")
-            for j in range(1, len(arr[0])):
-                if sum(arr[0][j][i:total_len + i]) == 0:
+            chunk_id = open("/raid/scratch/liym/features/" + str(cid) + "/chunk" + str(chunk) + "_ids.txt", "w")
+            qry_cp = numpy.array(qry_count, copy=True)
+            qry_st_cp = numpy.array(qry_st, copy=True)
+            for j in range(1, len(arr)):
+                for k in range(total_len):
+                    chunk_np[aln_num][k] = arr[j][k + i]
+                qry_cp[aln_num] = qry_count[j]
+                qry_st_cp[aln_num] = qry_st[j]
+                aln_num += 1
+
+            lst = []
+            for j in range(1, len(arr)):
+                match = 0
+                for k in range(total_len):
+                    if chr(chunk_np[0][k][0]).lower() == chr(chunk_np[j][k][0]).lower() and chr(chunk_np[0][k][0]) != "-":
+                        match += 1
+                lst.append((-abs(match), j))
+            lst.sort()
+            arr_cp = numpy.array(chunk_np, copy=True)
+            qry_cpcp = numpy.array(qry_cp, copy=True)
+            qry_st_cpcp = numpy.array(qry_st_cp, copy=True)
+            for j in range(len(lst)):
+                arr_cp[j + 1] = chunk_np[lst[j][1]]
+                if lst[j][0] == 0:
+                    for k in range(36):
+                        qry_cpcp[j + 1][k] = "-"
+                    qry_st_cpcp[j + 1][0] = 0
+                    qry_st_cpcp[j + 1][1] = 0
+                    qry_st_cpcp[j + 1][2] = 0
+                    qry_st_cpcp[j + 1][3] = 0
+                    qry_st_cpcp[j + 1][4] = 0
+                else:  
+                    qry_cpcp[j + 1] = qry_cp[lst[j][1]]
+                    qry_st_cpcp[j + 1] = qry_st_cp[lst[j][1]]
+            chunk_np = arr_cp
+
+            for j in range(1, len(qry_cpcp)):
+                if qry_cpcp[j][0] == "-":
                     continue
                 for k in range(36):
-                    chunk_id.write(qry_count[j][k])
-                chunk_id.write("\n")
-                for k in range(total_len):
-                    chunk_np[0][aln_num][k] = arr[0][j][k + i]
-                    chunk_np[1][aln_num][k] = arr[1][j][k + i]
-                aln_num += 1
-            chunk_np = numpy.delete(chunk_np, numpy.s_[aln_num:], 1)
-            with open("/raid/scratch/share/ont-haec/flye_example/features/" + str(cid) + "/chunk" + str(chunk) + "_feats.npy", "wb") as chunk_arr:
+                    chunk_id.write(qry_cpcp[j][k]) 
+                
+                chunk_id.write(" " + str(qry_st_cpcp[j][0]) + " " + str(qry_st_cpcp[j][1]) + " " + str(qry_st_cpcp[j][2]) + " " + str(qry_st_cpcp[j][3]) + " " + chr(qry_st_cpcp[j][4]) + "\n") 
+
+            chunk_np = numpy.delete(chunk_np, numpy.s_[31:], 0)
+            with open("/raid/scratch/liym/features/" + str(cid) + "/chunk" + str(chunk) + "_feats.npy", "wb") as chunk_arr:
                 numpy.save(chunk_arr, chunk_np)
             chunk += 1
             i += total_len
             chunk_id.close()
 
-        numpy.save(m, arr)
     #logger.debug("Filtered: {0} out of {1}".format(filtered, len(alignment)))
     return profile, aln_errors
 

@@ -14,6 +14,7 @@ import os
 from collections import defaultdict
 import gzip
 import ctypes
+import traceback
 
 from flye.polishing.alignment import (make_alignment, get_contigs_info,
                                       merge_chunks, split_into_chunks)
@@ -97,6 +98,7 @@ def polish_parallel(ctg_mng, read_seqs, work_dir, num_iters, num_threads, read_p
             polish(ctg_seq, read_seqs, work_dir, num_iters, num_threads, read_platform, read_type, output_progress, job_id)
     except Exception as e:
         logger.error("Thread exception")
+        logger.error(traceback.format_exc())
 
 def polish(contig_seqs, read_seqs, work_dir, num_iters, num_threads, read_platform,
            read_type, output_progress, job_id):
@@ -139,6 +141,8 @@ def polish(contig_seqs, read_seqs, work_dir, num_iters, num_threads, read_platfo
         contigs_info = get_contigs_info(prev_assembly)
         bubbles_file = os.path.join(work_dir,
                                     "bubbles_{0}.fasta".format(job_id))
+        f = open(bubbles_file, "w")
+        f.close()
         coverage_stats, mean_aln_error = \
             make_bubbles(alignment_file, contigs_info, prev_assembly,
                          read_platform, num_threads,
@@ -151,8 +155,9 @@ def polish(contig_seqs, read_seqs, work_dir, num_iters, num_threads, read_platfo
             logger.info("No reads were aligned during polishing")
             if not output_progress:
                 logger.disabled = logger_state
-            open(stats_file, "w").write("#seq_name\tlength\tcoverage\n")
-            open(polished_file, "w")
+            os.remove(bubbles_file)
+            #open(stats_file, "w").write("#seq_name\tlength\tcoverage\n")
+            #open(polished_file, "w")
             return polished_file, stats_file
         return None
 '''        #####

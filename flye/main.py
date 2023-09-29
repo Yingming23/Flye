@@ -434,9 +434,9 @@ def _run_polisher_only(args):
     synch_ctg_mng = pol.SynchonizedCtgSeqManager(args.polish_target, multiprocessing.Manager())
     process_in_parallel(pol.polish_parallel, (synch_ctg_mng, args.reads, args.out_dir, 
                                             args.num_iters, 1, args.platform, args.read_type, True), args.threads)
-    pol.polish(args.polish_target, args.reads, args.out_dir,
-               args.num_iters, args.threads, args.platform,
-               args.read_type, output_progress=True)
+#    pol.polish(args.polish_target, args.reads, args.out_dir,
+#               args.num_iters, args.threads, args.platform,
+#               args.read_type, output_progress=True)
     logger.info("Done!")
 
 

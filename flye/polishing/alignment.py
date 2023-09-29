@@ -93,7 +93,7 @@ def get_uniform_alignments(alignments):
     WINDOW = 100
     MIN_COV = 20
     GOOD_RATE = 0.66
-    MIN_QV = 20
+    MIN_QV = 60
 
     def is_reliable(aln):
         return not aln.is_secondary and aln.map_qv >= MIN_QV
@@ -261,7 +261,7 @@ def _run_minimap(reference_file, reads_files, num_proc, reads_type, out_file):
     tmp_prefix = os.path.join(os.path.dirname(out_file),
                               "sort_" + datetime.datetime.now().strftime("%y%m%d_%H%M%S"))
     cmdline.extend(["-a", "-p", "0.5", "-N", "10", "--sam-hit-only", "-L", "-K", BATCH,
-                    "-z", "1000", "--secondary-seq", "-I", "64G"])
+                    "-z", "1000", "--secondary-seq", "-I", "64G", "-k", "25", "-w", "13", "-r", "200", "-m", "3000"])
     cmdline.extend(["|", SAMTOOLS_BIN, "view", "-T", "'" + reference_file + "'", "-u", "-"])
     cmdline.extend(["|", SAMTOOLS_BIN, "sort", "-T", "'" + tmp_prefix + "'", "-O", "bam",
                     "-@", SORT_THREADS, "-l", "1", "-m", SORT_MEM])
