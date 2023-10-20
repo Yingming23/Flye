@@ -5,6 +5,7 @@ Personal Edits
 --------------
 Edited flye/polishing/bubbles.py to output Flye alignments into folder (/raid/scratch/liym/features)                                                                                                              
 Running --polish-target separates out target sequences and runs them individually against query sequences with polish module of Flye                                                                               
+Edited Minimap2 parameters to -ax ava-ont -K 8g -k 25 -w 19 -e 200 -r 150 -m 4000 -z 200 for --nano-hq                                                     
 Run using command (bin/flye --nano-hq <target_sequence> --polish-target <query_sequences> -t threads -o outputs)
 
 [![BioConda Install](https://img.shields.io/conda/dn/bioconda/flye.svg?style=flag&label=BioConda%20install)](https://anaconda.org/bioconda/flye)
