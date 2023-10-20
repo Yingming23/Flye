@@ -2,10 +2,10 @@ Flye assembler
 ==============
 
 Personal Edits
-==============
-Edited flye/polishing/bubbles.py to output Flye alignments into folder (/raid/scratch/liym/features) \n
-Running --polish-target separates out target sequences and runs them individually against query sequences with polish module of Flye \n
-Run using command (bin/flye --nano-hq <target_sequence> --polish-target <query_sequences> -t <threads> -o <output>) \n
+--------------
+Edited flye/polishing/bubbles.py to output Flye alignments into folder (/raid/scratch/liym/features)                                                                                                              
+Running --polish-target separates out target sequences and runs them individually against query sequences with polish module of Flye                                                                               
+Run using command (bin/flye --nano-hq <target_sequence> --polish-target <query_sequences> -t threads -o outputs)
 
 [![BioConda Install](https://img.shields.io/conda/dn/bioconda/flye.svg?style=flag&label=BioConda%20install)](https://anaconda.org/bioconda/flye)
 
